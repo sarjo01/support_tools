@@ -67,6 +67,7 @@ class vwsesslog {
             stmt.execute(insertqlog);
             stmt.execute(updlogend);
             stmt.execute(deletesnap);
+            conn.commit();
             Thread.sleep(interval);
          }
       }
