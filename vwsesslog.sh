@@ -8,7 +8,6 @@
 # 2015-12-30 (sarjo01) Add new ima table, client_terminal.
 # 2016-01-05 (sarjo01) Use case stmt for commands.
 #
-cmdlist="start stop status list queries"
 ii=`ingprenv II_INSTALLATION`
 dasport=${ii}7
 p=
