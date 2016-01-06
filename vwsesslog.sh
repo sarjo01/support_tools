@@ -6,8 +6,9 @@
 # 2015-12-10 (sarjo01) Add session_id to list.
 # 2015-12-16 (sarjo01) Add queries.
 # 2015-12-30 (sarjo01) Add new ima table, client_terminal.
+# 2016-01-05 (sarjo01) Use case stmt for commands.
 #
-cmd=$1
+cmdlist="start stop status list queries"
 ii=`ingprenv II_INSTALLATION`
 dasport=${ii}7
 p=
@@ -80,14 +81,16 @@ chkconnect() {
 }
 
 [ $# -lt 1 ] && syntax
-if [ "$cmd" == "queries" ]
-then
-   [ "$2" != "" ] && session_id="where varchar(session_id, 22) = '$2'"
-   chkconnect
-   echo
-   echo "Session_ID             Query_started       Query_text"
-   echo "---------------------- ------------------- ------------------------------------------------------------"
-   cat << QUERIES | sql -S imadb
+case $1 in
+
+   "queries")
+
+[ "$2" != "" ] && session_id="where varchar(session_id, 22) = '$2'"
+chkconnect
+echo
+echo "Session_ID             Query_started       Query_text"
+echo "---------------------- ------------------- ------------------------------------------------------------"
+cat << QUERIES | sql -S imadb
 \silent
 \notitles
 select varchar(session_id, 22),
@@ -98,34 +101,39 @@ QUERIES
 echo
 status
 echo
-else
-if [ "$cmd" == "status" ]
+   ;;
+
+   "status") 
+
+status
+   ;;
+
+   "stop")
+
+stoplog 
+status
+   ;;
+
+   "start")
+
+[[ $2 != *[[:digit:]]* ]] && syntax
+interval=$2
+chkconnect
+stoplog 
+imatable
+if [[ -z $table ]]
 then
-   status
+   new=new
 else
-if [ "$cmd" == "stop" ]
-then
-   stoplog 
-   status
-else
-if [ "$cmd" == "start" ]
-then
-   [[ $2 != *[[:digit:]]* ]] && syntax
-   interval=$2
-   chkconnect
-   stoplog 
-   imatable
-   if [[ -z $table ]]
-   then
-      new=new
-   else
-      new=$3
-   fi
-   setsid java -cp ./vwsesslog.jar:$II_SYSTEM/ingres/lib/iijdbc.jar vwsesslog $dasport $interval $new >$outfile 2>&1 < /dev/null &
-   sleep 2
-   status 
-else
-[ "$cmd" != "list" ] && syntax
+   new=$3
+fi
+setsid java -cp ./vwsesslog.jar:$II_SYSTEM/ingres/lib/iijdbc.jar vwsesslog $dasport $interval $new >$outfile 2>&1 < /dev/null &
+sleep 2
+status 
+   ;;
+
+   "list")
+
 chkconnect
 [ "$table" == "" ] && echo && echo "Logging table not initialized." && echo && exit
 ts=
@@ -155,7 +163,9 @@ SELECT
 echo
 status
 echo
-fi
-fi
-fi
-fi
+   ;;
+
+   *)
+syntax
+   ;;
+esac
