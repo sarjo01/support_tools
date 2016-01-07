@@ -1,0 +1,254 @@
+#!/bin/bash
+#
+# Copyright 2016 Actian Corporation
+#
+# Program Ownership and Restrictions.
+#
+# This Program (Shell Script) provided hereunder is licensed, not sold, and all
+# intellectual property rights and title to the Program shall remain with Actian
+# and Our suppliers and no interest or ownership therein is conveyed to you.
+#
+# No right to create a copyrightable work, whether joint or unitary, is granted
+# or implied; this includes works that modify (even for purposes of error
+# correction), adapt, or translate the Program or create derivative works,
+# compilations, or collective works therefrom, except as necessary to configure
+# the Program using the options and tools provided for such purposes and
+# contained in the Program.
+#
+# The Program is supplied directly to you for use as defined by the controlling
+# documentation e.g. a Consulting Agreement and for no other reason.
+#
+# You will treat the Program as confidential information and you will treat it
+# in the same manner as you would to protect your own confidential information,
+# but in no event with less than reasonable care.
+#
+# The Program shall not be disclosed to any third party (except solely to
+# employees, attorneys, and consultants, who need to know and are bound by a
+# written agreement with Actian to maintain the confidentiality of the Program
+# in a manner consistent with this licence or as defined in any other agreement)
+# or used except as permitted under this licence or by agreement between the
+# parties.
+#
+#
+# Session Logger
+#
+# 2015-12-08 (sarjo01) Created.
+# 2015-12-10 (sarjo01) Add session_id to list.
+# 2015-12-16 (sarjo01) Add queries.
+# 2015-12-30 (sarjo01) Add new ima table, client_terminal.
+# 2016-01-05 (sarjo01) Use case stmt for commands.
+# 2016-01-07 (sarjo01) Created from Java-based version.
+#
+ii=`ingprenv II_INSTALLATION`
+dasport=${ii}7
+p=
+table=
+outfile=/tmp/vwsesslog${ii}.out
+iiup=$(echo "\q" | sql imadb | grep login)
+[ "$iiup" != "" ] && table=$(echo "help table vwsesslog\g" | sql -S imadb | grep Name:)
+cat << SNAP > snapshot.sql
+set autocommit off\\g
+declare global temporary table sesssnap as
+   select s.* from vwsesslog s where 1 = 0
+   on commit preserve rows with norecovery;\\g
+insert into sesssnap select *, int(0), int(0), int(0) from ima_vwsesslog
+   where db_owner != '\$ingres' and db_owner != '' and
+   effective_user not like '%>%' and effective_user != '\$ingres'\\g
+update sesssnap set session_lquery = trim(both ' ' from session_lquery)\\g
+update sesssnap set
+   sesskey=hash(varchar(session_id)||varchar(session_time)),
+   qkey=hash(varchar(session_id)||varchar(query_start_secs)||varchar(session_lquery))\\g
+insert into vwsesslog select
+   * from sesssnap
+   where sesskey not in (select sesskey from vwsesslog)\\g
+insert into vwqrylog select
+   session_id, sesskey, query_start_secs, qkey, session_lquery
+   from sesssnap where qkey not in
+   (select qkey from vwqrylog)\\g
+update vwsesslog set session_et = unix_timestamp()
+   where session_et = 0 and sesskey not in (select sesskey from sesssnap)\\g
+commit\\g
+SNAP
+cat << SNAPPROC > vwsesssnap${ii}
+while [ 1 -eq 1 ]
+do
+sql imadb < snapshot.sql 2>&1 >/dev/null
+done
+SNAPPROC
+chmod +x vwsesssnap${ii}
+syntax() {
+   echo
+   echo "Syntax: vwsesslog.sh start interval_seconds [ new ]"
+   echo "        vwsesslog.sh stop"
+   echo "        vwsesslog.sh status"
+   echo "        vwsesslog.sh list [ timestamp [ dbname ] ]"
+   echo "        vwsesslog.sh queries [ session_id ]"
+   echo
+   exit
+}
+imatable() {
+cat << IMATBL | sql -u\$ingres imadb 2>&1 >/dev/null
+drop table if exists ima_vwsesslog\\g
+register table ima_vwsesslog (
+   server varchar(64) not null not default is
+      'SERVER',
+   session_id varchar(32) not null not default is
+      'exp.scf.scs.scb_self',
+   effective_user varchar(32) not null not default is
+      'exp.scf.scs.scb_euser',
+   real_user varchar(32) not null not default is
+      'exp.scf.scs.scb_ruser',
+   db_name varchar(32) not null not default is
+      'exp.scf.scs.scb_database',
+   db_owner varchar(32) not null not default is
+      'exp.scf.scs.scb_dbowner',
+   client_host varchar(20) not null not default is
+      'exp.scf.scs.scb_client_host',
+   client_user varchar(32) not null not default is
+      'exp.scf.scs.scb_client_user',
+   client_terminal varchar(20) not null not default is
+      'exp.scf.scs.scb_client_tty',
+   session_time integer not null not default is
+      'exp.clf.unix.cs.scb_connect',
+   query_start_secs integer4 not null not default is
+      'exp.scf.scs.scb_query_start_secs',
+   session_lquery varchar(250) not null not default is
+      'exp.scf.scs.scb_lastquery' )
+as import from 'tables'
+with dbms = IMA, structure = unique sortkeyed,
+key = (server, session_id)\\g
+grant all on ima_vwsesslog to public with grant option\\g
+IMATBL
+}
+logtables() {
+cat << LOGTBLS | sql imadb 2>&1 >/dev/null
+drop table if exists vwsesslog, vwqrylog;
+create table vwsesslog as select
+   s.*, int(0) as sesskey, int(0) as qkey, int(0) as session_et
+   from ima_vwsesslog s where 1 = 0;
+create table vwqrylog as select
+   session_id, sesskey, query_start_secs, qkey, session_lquery
+   from vwsesslog where 1 = 0;\\g
+grant all on vwsesslog to public with grant option\\g
+grant all on vwqrylog to public with grant option\\g
+LOGTBLS
+}
+setp() {
+   p=$(ps -fade | grep  vwsesssnap${ii} | grep -v grep | awk '{print $2}')
+}
+status() {
+   setp
+   if [[ -n $p ]]
+   then
+      echo Started...
+   else
+      echo Stopped. && [ -s $outfile ] && echo Last error: && cat $outfile
+   fi
+}
+stoplog() {
+   setp
+   [ "$p" != "" ] && kill $p 
+}
+chkconnect() {
+   [ "$iiup" == "" ] && echo && echo "Can't connect to imadb. Installation down?" && echo && exit
+}
+
+[ $# -lt 1 ] && syntax
+case $1 in
+
+"queries")
+
+[ "$2" != "" ] && session_id="where varchar(session_id, 22) = '$2'"
+chkconnect
+echo
+echo "Session_ID             Query_started       Query_text"
+echo "---------------------- ------------------- ------------------------------------------------------------"
+cat << QUERIES | sql -S imadb
+\silent
+\notitles
+select varchar(session_id, 22),
+varchar(timestamp(from_unixtime(query_start_secs)), 19),
+varchar(session_lquery, 60)
+from vwqrylog $session_id order by 2\\g
+QUERIES
+echo
+status
+echo
+;;
+
+"status") 
+
+status
+;;
+
+"stop")
+
+stoplog 
+status
+;;
+
+"start")
+
+[[ $2 != *[[:digit:]]* ]] && syntax
+interval=$2
+cat << SNAPPROC > vwsesssnap${ii}
+while [ 1 -eq 1 ]
+do
+sql imadb < snapshot.sql 2>&1 >/dev/null
+sleep $interval
+done
+SNAPPROC
+chmod +x vwsesssnap${ii}
+chkconnect
+stoplog 
+imatable
+if [[ -z $table ]]
+then
+   new=new
+else
+   new=$3
+fi
+[ "$new" == "new" ] && logtables
+setsid ./vwsesssnap${ii} >$outfile 2>&1 < /dev/null &
+sleep 2
+status 
+;;
+
+"list")
+
+chkconnect
+[ "$table" == "" ] && echo && echo "Logging table not initialized." && echo && exit
+ts=
+tdb=
+[ "$2" != "" ] && ts="where '$2' between start_time and end_time"
+[ "$3" != "" ] && tdb="and db_name = '$3'"
+echo
+echo "Session_ID             Client_host  Client_term  Client_user  Eff_user     Real_user    DB_name      Session_started     Session_ended_by"
+echo "---------------------- ------------ ------------ ------------ ------------ ------------ ------------ ------------------- -------------------"
+cat << SELECT | sql -S imadb
+\silent
+\notitles
+with t as (select
+varchar(session_id, 22) as session_id,
+varchar(client_host, 12) as client_host,
+varchar(client_terminal, 12) as client_terminal,
+varchar(client_user, 12) as client_user,
+varchar(effective_user, 12) as effectiver_user,
+varchar(real_user, 12) as real_user,
+varchar(db_name, 12) as db_name,
+varchar(timestamp(from_unixtime(session_time)), 19) as start_time,
+case when session_et = 0 then '                   ' else
+varchar(timestamp(from_unixtime(session_et)), 19) end as end_time
+from vwsesslog)
+select * from t $ts $tdb order by start_time\\g
+SELECT
+echo
+status
+echo
+;;
+
+*)
+
+syntax
+;;
+esac
