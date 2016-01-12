@@ -37,6 +37,7 @@
 # 2015-12-16 (sarjo01) Add queries.
 # 2015-12-30 (sarjo01) Add new ima table, client_terminal.
 # 2016-01-05 (sarjo01) Use case stmt for commands.
+# 2016-01-07 (sarjo01) Created from Java-based version.
 #
 ii=`ingprenv II_INSTALLATION`
 dasport=${ii}7
@@ -45,6 +46,38 @@ table=
 outfile=/tmp/vwsesslog${ii}.out
 iiup=$(echo "\q" | sql imadb | grep login)
 [ "$iiup" != "" ] && table=$(echo "help table vwsesslog\g" | sql -S imadb | grep Name:)
+cat << SNAP > snapshot.sql
+\silent
+set autocommit off\\g
+declare global temporary table sesssnap as
+   select s.* from vwsesslog s where 1 = 0
+   on commit preserve rows with norecovery;\\g
+insert into sesssnap select *, int(0), int(0), int(0) from ima_vwsesslog
+   where db_owner != '\$ingres' and db_owner != '' and
+   effective_user not like '%>%' and effective_user != '\$ingres'\\g
+update sesssnap set session_lquery = trim(both ' ' from session_lquery)\\g
+update sesssnap set
+   sesskey=hash(varchar(session_id)||varchar(session_time)),
+   qkey=hash(varchar(session_id)||varchar(query_start_secs)||varchar(session_lquery))\\g
+insert into vwsesslog select
+   * from sesssnap
+   where sesskey not in (select sesskey from vwsesslog)\\g
+insert into vwqrylog select
+   session_id, sesskey, query_start_secs, qkey, session_lquery
+   from sesssnap where qkey not in
+   (select qkey from vwqrylog)\\g
+update vwsesslog set session_et = unix_timestamp()
+   where session_et = 0 and sesskey not in (select sesskey from sesssnap)\\g
+drop sesssnap\\g
+commit\\g
+SNAP
+cat << SNAPPROC > vwsesssnap${ii}
+while [ 1 -eq 1 ]
+do
+sql imadb < snapshot.sql 2>&1 >/dev/null
+done
+SNAPPROC
+chmod +x vwsesssnap${ii}
 syntax() {
    echo
    echo "Syntax: vwsesslog.sh start interval_seconds [ new ]"
@@ -89,8 +122,21 @@ key = (server, session_id)\\g
 grant all on ima_vwsesslog to public with grant option\\g
 IMATBL
 }
+logtables() {
+cat << LOGTBLS | sql imadb 2>&1 >/dev/null
+drop table if exists vwsesslog, vwqrylog;
+create table vwsesslog as select
+   s.*, int(0) as sesskey, int(0) as qkey, int(0) as session_et
+   from ima_vwsesslog s where 1 = 0;
+create table vwqrylog as select
+   session_id, sesskey, query_start_secs, qkey, session_lquery
+   from vwsesslog where 1 = 0;\\g
+grant all on vwsesslog to public with grant option\\g
+grant all on vwqrylog to public with grant option\\g
+LOGTBLS
+}
 setp() {
-   p=$(ps -fade | grep vwsesslog.jar | grep $dasport | grep -v grep | awk '{print $2}')
+   p=$(ps -fade | grep  vwsesssnap${ii} | grep -v grep | awk '{print $2}')
 }
 status() {
    setp
@@ -103,7 +149,11 @@ status() {
 }
 stoplog() {
    setp
-   [ "$p" != "" ] && kill $p 
+   if [ "$p" != "" ]
+   then
+      echo "\\q" >> /tmp/vwsnapfifo${ii}
+      kill $p 
+   fi
 }
 chkconnect() {
    [ "$iiup" == "" ] && echo && echo "Can't connect to imadb. Installation down?" && echo && exit
@@ -147,6 +197,19 @@ status
 
 [[ $2 != *[[:digit:]]* ]] && syntax
 interval=$2
+cat << SNAPPROC > vwsesssnap${ii}
+spipe=/tmp/vwsnapfifo${ii}
+#rm \$spipe 2>&1 >/dev/null
+[[ ! -a \$spipe ]] && mkfifo \$spipe
+exec 4<>\$spipe
+sql -S imadb < \$spipe 2>&1 >/dev/null &
+while [ 1 -eq 1 ]
+do
+cat snapshot.sql >> \$spipe
+sleep $interval
+done
+SNAPPROC
+chmod +x vwsesssnap${ii}
 chkconnect
 stoplog 
 imatable
@@ -156,7 +219,8 @@ then
 else
    new=$3
 fi
-setsid java -cp ./vwsesslog.jar:$II_SYSTEM/ingres/lib/iijdbc.jar vwsesslog $dasport $interval $new >$outfile 2>&1 < /dev/null &
+[ "$new" == "new" ] && logtables
+setsid ./vwsesssnap${ii} >$outfile 2>&1 < /dev/null &
 sleep 2
 status 
 ;;
