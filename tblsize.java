@@ -15,16 +15,17 @@ class tblsize {
 
    public static void main (String args[]) {
 
-      if (args.length < 2) {
+      if (args.length < 3) {
          System.err.println(
             "\nSyntax: java tblsize db:dasport[:host:user:pwd] " +
-            "tblowner [tablename]\n"); 
+            "tblowner sample [ tblname ]\n"); 
          System.exit(0);
       }
 
       Properties jprops = new Properties();
       jprops.setProperty("select_loop", "on");
 
+      int sample = Integer.parseInt(args[2]);
       long gtot, ttot;
       Connection conn = null;
       Statement stmt = null;
@@ -41,9 +42,13 @@ class tblsize {
       String schema_name = args[1];
       String table_name, col_name;
       String tblqual = "";
-      if (args.length == 3)
-//       tblqual = "table_name = '" + args[2] + "' and ";
-         tblqual = "table_name like '" + args[2] + "' and ";
+      String sampqual = "";
+      if (sample > 1) {
+         sampqual = String.format(" where mod(tid, %d)=0", sample);
+      }
+
+      if (args.length == 4)
+         tblqual = "trim(table_name) like '" + args[3] + "' and ";
 
       try {
          conn = DriverManager.getConnection(url, jprops);
@@ -82,13 +87,14 @@ class tblsize {
             for (int j=1; j<=cols; j++) {
                col_name = rsmd.getColumnName(j);
                String qTxt = String.format(
-                  "select int8(sum(int8(length(varchar(\"%s\"))))) from %s.%s",
-                   col_name, schema_name, table_name);
+                  "select int8(sum(int8(length(varchar(\"%s\"))))) from %s.%s %s",
+                   col_name, schema_name, table_name, sampqual);
                rs2 = stmt2.executeQuery(qTxt);
                rs2.next();
                ttot += rs2.getLong(1);
                stmt2.close();
             }
+            ttot *= sample;
             gtot += ttot;
             stmt.close();
             System.out.format("\r%-32.32s %s", table_name, " :");
