@@ -33,7 +33,8 @@ class tblsize {
       if (args.length == 5)
          if ((sample = Integer.parseInt(args[4])) < 1)
             sample = 1;
-      long gtot, ttot;
+      long gtot = 0L;
+      long ttot = 0L;
       Connection conn = null;
       Statement stmt = null;
       Statement stmt2 = null;
@@ -42,10 +43,11 @@ class tblsize {
       ResultSetMetaData rsmd = null;
       int cols = 0;
       int tblcnt = 0;
-      String tbllist[];
+      String tbllist[] = new String[1];
 
       String url = "jdbc:ingres://localhost:" + das + "/" + dbname;
-      String table_name, col_name;
+      String table_name = null;
+      String col_name = null;
       String tblqual = " trim(table_name) like '" + tblspec + "' and ";
       String ownqual = " trim(table_owner) like '" + ownspec + "' and table_owner != '$ingres' and ";
       String sampqual = "";
@@ -78,8 +80,13 @@ class tblsize {
             tbllist[i] = rs1.getString(1);
          }
          stmt.close();
-         gtot = 0;
-         for (int i=0; i<tblcnt; i++) {
+      }
+      catch (SQLException sqlex) {
+         System.err.println("\nDBERROR: " + sqlex.getMessage());
+         System.exit(0); 
+      }
+      for (int i=0; i<tblcnt; i++) {
+         try {
             table_name = tbllist[i];
             System.out.format("%-40.40s %s", table_name, " :   Scanning");
             rs1 = stmt.executeQuery(
@@ -104,15 +111,18 @@ class tblsize {
             System.out.format("%11.11s\n",
                sizer(ttot));
          }
-         String tblf = String.format("\nTOTAL: %d table(s)", tblcnt);
-         System.out.format("%-40.40s   :%11.11s\n",
-            tblf, sizer(gtot));
+         catch (SQLException sqlex) {
+            if (sqlex.getErrorCode() != 3502) {
+               System.err.println("\nDBERROR: " + sqlex.getMessage());
+               System.exit(0); 
+            }
+            System.out.format("\r%-40.40s %s\n", table_name, " :   No GRANT permit for SELECT");
+            continue;
+         }
       }
-      catch (SQLException sqlex) {
-         System.err.println("\nDBERROR: " + sqlex.getMessage());
-         System.err.println(sqlex.getErrorCode());
-         System.exit(0); 
-      }
+      String tblf = String.format("\nTOTAL: %d table(s)", tblcnt);
+      System.out.format("%-40.40s   :%11.11s\n",
+         tblf, sizer(gtot));
    }
 
    private static String sizer(long size) {
