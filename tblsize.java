@@ -1,7 +1,7 @@
 //
 // Copyright 2016 Actian Corporation
 //
-// Table size calculator, schema based
+// Table size calculator
 //
 // 12-Jan-2016 (sarjo01) Created.
 //
@@ -15,17 +15,24 @@ class tblsize {
 
    public static void main (String args[]) {
 
-      if (args.length < 3) {
-         System.err.println(
-            "\nSyntax: java tblsize db:dasport[:host:user:pwd] " +
-            "tblowner sample [ tblname ]\n"); 
+      if (args.length < 4) {
+         System.out.println(
+            "\nSyntax: java tblsize db dasport " +
+            "tblspec ownerspec [ sample ]\n"); 
          System.exit(0);
       }
 
       Properties jprops = new Properties();
       jprops.setProperty("select_loop", "on");
 
-      int sample = Integer.parseInt(args[2]);
+      String dbname = args[0];
+      String das = args[1];
+      String tblspec = args[2];
+      String ownspec = args[3];
+      int sample = 1;
+      if (args.length == 5)
+         if ((sample = Integer.parseInt(args[4])) < 1)
+            sample = 1;
       long gtot, ttot;
       Connection conn = null;
       Statement stmt = null;
@@ -37,40 +44,36 @@ class tblsize {
       int tblcnt = 0;
       String tbllist[];
 
-      ConnTarget tgt = new ConnTarget(args[0]);
-      String url = tgt.getUrl(); 
-      String schema_name = args[1];
+      String url = "jdbc:ingres://localhost:" + das + "/" + dbname;
       String table_name, col_name;
-      String tblqual = "";
+      String tblqual = " trim(table_name) like '" + tblspec + "' and ";
+      String ownqual = " trim(table_owner) like '" + ownspec + "' and table_owner != '$ingres' and ";
       String sampqual = "";
       if (sample > 1) {
          sampqual = String.format(" where mod(tid, %d)=0", sample);
       }
-
-      if (args.length == 4)
-         tblqual = "trim(table_name) like '" + args[3] + "' and ";
 
       try {
          conn = DriverManager.getConnection(url, jprops);
          stmt  = conn.createStatement();
          stmt2 = conn.createStatement();
          rs1 = stmt.executeQuery(
-            "select count(*) from iitables where table_owner = '" +
-            schema_name + "' and table_type = 'T' and " + tblqual +
-            "storage_structure like 'VECT%'");
+            "select count(*) from iitables where " + 
+            tblqual + ownqual +
+            "table_type = 'T' and storage_structure like 'VECT%'");
          rs1.next();
          tblcnt = rs1.getInt(1);
          stmt.close();
          if (tblcnt == 0) {
             System.err.println(
-               "\nNo tables found for schema '" + schema_name + "'\n");
+               "\nNo tables found for owner spec '" + args[2] + "'\n");
             System.exit(0);
          }
          tbllist = new String[tblcnt];
          rs1 = stmt.executeQuery(
-            "select table_name from iitables where table_owner = '" +
-            schema_name + "' and table_type = 'T' and " + tblqual +
-            "storage_structure like 'VECT%' order by 1");
+            "select trim(table_owner)||'.'||trim(table_name) from iitables where " +
+            tblqual + ownqual +
+            "table_type = 'T' and storage_structure like 'VECT%' order by 1");
          for (int i=0; rs1.next(); i++) {
             tbllist[i] = rs1.getString(1);
          }
@@ -78,17 +81,17 @@ class tblsize {
          gtot = 0;
          for (int i=0; i<tblcnt; i++) {
             table_name = tbllist[i];
-            System.out.format("%-32.32s %s", table_name, " :   Scanning");
+            System.out.format("%-40.40s %s", table_name, " :   Scanning");
             rs1 = stmt.executeQuery(
-              "select * from " + schema_name + "." + table_name + " where 1=0");
+              "select * from " + table_name + " where 1=0");
             rsmd = rs1.getMetaData();
             cols = rsmd.getColumnCount();
             ttot = 0;
             for (int j=1; j<=cols; j++) {
                col_name = rsmd.getColumnName(j);
                String qTxt = String.format(
-                  "select int8(sum(int8(length(varchar(\"%s\"))))) from %s.%s %s",
-                   col_name, schema_name, table_name, sampqual);
+                  "select int8(sum(int8(length(varchar(\"%s\"))))) from %s %s",
+                   col_name, table_name, sampqual);
                rs2 = stmt2.executeQuery(qTxt);
                rs2.next();
                ttot += rs2.getLong(1);
@@ -97,16 +100,17 @@ class tblsize {
             ttot *= sample;
             gtot += ttot;
             stmt.close();
-            System.out.format("\r%-32.32s %s", table_name, " :");
+            System.out.format("\r%-40.40s %s", table_name, " :");
             System.out.format("%11.11s\n",
                sizer(ttot));
          }
          String tblf = String.format("\nTOTAL: %d table(s)", tblcnt);
-         System.out.format("%-32.32s   :%11.11s\n",
+         System.out.format("%-40.40s   :%11.11s\n",
             tblf, sizer(gtot));
       }
       catch (SQLException sqlex) {
          System.err.println("\nDBERROR: " + sqlex.getMessage());
+         System.err.println(sqlex.getErrorCode());
          System.exit(0); 
       }
    }
