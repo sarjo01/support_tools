@@ -47,6 +47,7 @@ outfile=/tmp/vwsesslog${ii}.out
 iiup=$(echo "\q" | sql imadb | grep login)
 [ "$iiup" != "" ] && table=$(echo "help table vwsesslog\g" | sql -S imadb | grep Name:)
 cat << SNAP > snapshot.sql
+\silent
 set autocommit off\\g
 declare global temporary table sesssnap as
    select s.* from vwsesslog s where 1 = 0
@@ -67,6 +68,7 @@ insert into vwqrylog select
    (select qkey from vwqrylog)\\g
 update vwsesslog set session_et = unix_timestamp()
    where session_et = 0 and sesskey not in (select sesskey from sesssnap)\\g
+drop sesssnap\\g
 commit\\g
 SNAP
 cat << SNAPPROC > vwsesssnap${ii}
@@ -147,7 +149,11 @@ status() {
 }
 stoplog() {
    setp
-   [ "$p" != "" ] && kill $p 
+   if [ "$p" != "" ]
+   then
+      echo "\\q" >> /tmp/vwsnapfifo${ii}
+      kill $p 
+   fi
 }
 chkconnect() {
    [ "$iiup" == "" ] && echo && echo "Can't connect to imadb. Installation down?" && echo && exit
@@ -192,9 +198,14 @@ status
 [[ $2 != *[[:digit:]]* ]] && syntax
 interval=$2
 cat << SNAPPROC > vwsesssnap${ii}
+spipe=/tmp/vwsnapfifo${ii}
+#rm \$spipe 2>&1 >/dev/null
+[[ ! -a \$spipe ]] && mkfifo \$spipe
+exec 4<>\$spipe
+sql -S imadb < \$spipe 2>&1 >/dev/null &
 while [ 1 -eq 1 ]
 do
-sql imadb < snapshot.sql 2>&1 >/dev/null
+cat snapshot.sql >> \$spipe
 sleep $interval
 done
 SNAPPROC
