@@ -38,15 +38,20 @@
 # 2015-12-30 (sarjo01) Add new ima table, client_terminal.
 # 2016-01-05 (sarjo01) Use case stmt for commands.
 # 2016-01-07 (sarjo01) Created from Java-based version.
+# 2016-01-20 (sarjo01) Process rewrite.
 #
 ii=`ingprenv II_INSTALLATION`
 dasport=${ii}7
 p=
 table=
 outfile=/tmp/vwsesslog${ii}.out
+sessproc=/tmp/vwsessproc${ii}
+sessfifo=/tmp/vwsessfifo${ii}
+sessbkg=/tmp/vwsessbkg${ii}
+snapqs=/tmp/vwsesslog.sql
 iiup=$(echo "\q" | sql imadb | grep login)
 [ "$iiup" != "" ] && table=$(echo "help table vwsesslog\g" | sql -S imadb | grep Name:)
-cat << SNAP > snapshot.sql
+cat << SNAP > $snapqs
 \silent
 set autocommit off\\g
 declare global temporary table sesssnap as
@@ -71,13 +76,6 @@ update vwsesslog set session_et = unix_timestamp()
 drop sesssnap\\g
 commit\\g
 SNAP
-cat << SNAPPROC > vwsesssnap${ii}
-while [ 1 -eq 1 ]
-do
-sql imadb < snapshot.sql 2>&1 >/dev/null
-done
-SNAPPROC
-chmod +x vwsesssnap${ii}
 syntax() {
    echo
    echo "Syntax: vwsesslog.sh start interval_seconds [ new ]"
@@ -136,7 +134,7 @@ grant all on vwqrylog to public with grant option\\g
 LOGTBLS
 }
 setp() {
-   p=$(ps -fade | grep  vwsesssnap${ii} | grep -v grep | awk '{print $2}')
+   p=$(ps -fade | grep $sessproc | grep -v grep | awk '{print $2}')
 }
 status() {
    setp
@@ -151,8 +149,14 @@ stoplog() {
    setp
    if [ "$p" != "" ]
    then
-      echo "\\q" >> /tmp/vwsnapfifo${ii}
+      echo "\\q" >> $sessfifo
       kill $p 
+   fi
+   if [ -e $sessbkg ]
+   then
+      bkgp=$(ps -fade | grep `cat $sessbkg` | grep "tm -LSQL -S imadb" | grep -v grep | awk '{print $2}')
+      [[ -n $bkgp ]] && kill $bkgp
+      rm $sessbkg
    fi
 }
 chkconnect() {
@@ -190,28 +194,28 @@ status
 "stop")
 
 stoplog 
+rm -rf $sessfifo 2>&1 > /dev/null
 status
 ;;
 
 "start")
 
 [[ $2 != *[[:digit:]]* ]] && syntax
+stoplog 
 interval=$2
-cat << SNAPPROC > vwsesssnap${ii}
-spipe=/tmp/vwsnapfifo${ii}
-#rm \$spipe 2>&1 >/dev/null
-[[ ! -a \$spipe ]] && mkfifo \$spipe
-exec 4<>\$spipe
-sql -S imadb < \$spipe 2>&1 >/dev/null &
+cat << SNAPPROC > $sessproc
+[[ ! -a $sessfifo ]] && mkfifo $sessfifo
+exec 4<>$sessfifo
+sql -S imadb < $sessfifo 2>&1 >/dev/null &
+echo \$! > $sessbkg
 while [ 1 -eq 1 ]
 do
-cat snapshot.sql >> \$spipe
+cat $snapqs >> $sessfifo
 sleep $interval
 done
 SNAPPROC
-chmod +x vwsesssnap${ii}
+chmod +x $sessproc
 chkconnect
-stoplog 
 imatable
 if [[ -z $table ]]
 then
@@ -220,7 +224,7 @@ else
    new=$3
 fi
 [ "$new" == "new" ] && logtables
-setsid ./vwsesssnap${ii} >$outfile 2>&1 < /dev/null &
+setsid $sessproc 2>&1 >$outfile < /dev/null &
 sleep 2
 status 
 ;;
